@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
@@ -68,6 +69,7 @@ def build_status_payload(conn, now: float, size_samples=None) -> dict:
         "notify_enabled": db.notify_enabled(conn),
         "seeded": db.is_seeded(conn),
         "threshold": config.LOW_FPS_THRESHOLD,
+        "sample_seconds": config.SAMPLE_SECONDS,
         "tz": config.DISPLAY_TZ,
         "database": db_size_trend(samples, now),
         "last_email": None if last is None else {
@@ -105,11 +107,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ZoneMinder monitoring", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.mount("/apexcharts-js", StaticFiles(directory=config.APEXCHARTS_DIR), name="apexcharts")
+app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return "<h1>ZoneMinder monitoring</h1><p>Dashboard arrives in Phase 2.4.</p>"
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(config.STATIC_DIR / "index.html")
 
 
 @app.get("/api/data")
