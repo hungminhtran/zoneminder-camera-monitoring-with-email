@@ -9,14 +9,14 @@ services:
     volumes:
       - ${DB_HOST_DIR:-./data}:/data
     ports:
-      - "8080:8080"
+      - "9080:9080"
     restart: unless-stopped
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/data?only=status', timeout=3)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9080/api/data?only=status', timeout=3)"
       interval: 30s
       timeout: 5s
       retries: 3

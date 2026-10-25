@@ -10,6 +10,7 @@ SAMPLE_SECONDS = int(os.environ.get("SAMPLE_SECONDS", "60"))
 RETENTION_DAYS = float(os.environ.get("RETENTION_DAYS", "2"))
 LOW_FPS_THRESHOLD = float(os.environ.get("LOW_FPS_THRESHOLD", "18"))
 DISPLAY_TZ = os.environ.get("DISPLAY_TZ", "Asia/Ho_Chi_Minh")
+PAUSE_PASSPHRASE = os.environ.get("PAUSE_PASSPHRASE", "")
 
 BACKOFF_H = [1, 2, 4, 8, 24]
 MIN_SAMPLES = 3
@@ -17,6 +18,8 @@ MAX_SAMPLES = 3
 
 DB_SIZE_SAMPLE_INTERVAL_S = 3600
 DB_SIZE_SAMPLE_COUNT = 24 * 7
+
+SECONDS_PER_DAY = 86400
 
 
 def required(name: str) -> str:
