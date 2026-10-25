@@ -285,8 +285,11 @@ Keep, it works — do not touch the internals:
 
 Rewrite — the logic problems:
 
-1. **State is keyed on `Path` or `Type`, not `Monitor.Id`.** Two monitors sharing a path
-   overwrite each other's samples and backoff. Key on the monitor id.
+1. **State is keyed on `Path` or `Type`.** Two monitors sharing a URL overwrite each other's
+   samples and backoff, and editing a camera's URL orphans its history. Key on
+   `Monitor.Name`, which ZoneMinder keeps unique among live monitors — stable across URL
+   changes, human-readable in the UI, and needing no extra `name` column in `cameras`.
+   Fall back to `Path`, then `Type`.
 2. **Backoff lives in `monitor_config.json`, and a corrupt file returns `{}` silently** —
    which resets every backoff and produces an alert storm. SQLite removes the failure mode.
 3. **`sys.exit()` inside `login()`** — one transient ZoneMinder hiccup kills the process.
@@ -368,7 +371,9 @@ first, run it against seeded data, and every later phase can be verified by look
 
 ### Phase 3 — Alert rules, pure (can run parallel with Phase 2)
 
-1. Add to `src/monitor.py`: `Decision`, `should_notify`, `next_backoff`, `extract`, `slot_for`.
+1. Add to `src/monitor.py`: `Camera` and `Decision` dataclasses, `should_notify`,
+   `next_backoff`, `extract`, `slot_for`, plus `build_email_body`, `send_gmail` and
+   `ZmClient` ported from `demo_monitor.py` with `sys.exit` replaced by exceptions.
 2. All pure — no DB, no clock, no network, no import-time side effects.
 3. Write `tests/test_notify.py`, `tests/test_backoff.py`, `tests/test_extract.py`
    (fixture-driven), `tests/test_time.py`.
@@ -394,7 +399,7 @@ first, run it against seeded data, and every later phase can be verified by look
 3. Rebuild the image from scratch and confirm history survives.
 4. Done when: §16 verification passes end to end.
 
-## 14. Unit test inventory (~74 cases)
+## 14. Unit test inventory
 
 `test_notify.py`
 
@@ -407,7 +412,8 @@ first, run it against seeded data, and every later phase can be verified by look
 7. `fps=0` counts as low.
 8. Window keeps only the last `max_samples`.
 9. Returned samples are in chronological order.
-10. Invariant: notify implies average < threshold.
+10. Healthy average resets `next_at` and `step`.
+11. Invariant: notify implies average < threshold.
 
 `test_backoff.py`
 
@@ -422,22 +428,27 @@ first, run it against seeded data, and every later phase can be verified by look
 9. `now` far past `next_at` → exactly one alert.
 10. `next_at` past but average healthy → quiet and reset.
 
-`test_extract.py`
+`test_extract.py` — parametrized over the real `tests/fixtures/monitors.json`:
 
-1. `Deleted` → `None`.
-2. `Path` preferred over `Type`.
-3. Falls back to `Type` when `Path` missing.
-4. `Width`x`Height` → `1920x1080`.
-5. Missing dimensions → `-`.
-6. Missing `Monitor_Status` → fps 0.0, bandwidth 0.0.
-7. Bandwidth bytes → KB, 1 decimal.
-8. JSON `null` fields don't raise.
+1. Every `Deleted` entry → `None`.
+2. Every live entry → `Camera` whose fields match the raw payload.
+3. `CaptureFPS` string (`'30.49'`) coerced to float.
+4. `source` comes from `Monitor.Name`.
+5. Falls back to `Path` when `Name` is null.
+6. Falls back to `Type` when `Name` and `Path` are empty.
+7. `Width`x`Height` → `1920x1080`.
+8. Missing dimensions → `-`.
+9. Missing `Monitor_Status` → fps 0, bandwidth 0, not connected.
+10. `CaptureBandwidth` bytes → KB, 1 decimal.
+11. All-null fields don't raise.
+12. `Status` other than `Connected` → not connected.
 
 `test_time.py`
 
 1. `slot_for` truncates to the interval.
 2. Idempotent (same slot for the same interval).
 3. Two timestamps inside one interval share a slot.
+4. A timestamp on the boundary moves to the next slot.
 
 `test_payload.py`
 
@@ -453,7 +464,9 @@ first, run it against seeded data, and every later phase can be verified by look
 1. Header states count and threshold.
 2. One block per camera.
 3. fps 2dp, bandwidth 1dp.
-4. Timestamp rendered in `DISPLAY_TZ`.
+4. Timestamp rendered in `DISPLAY_TZ`, asserted against a **modern** instant
+   (`1_700_000_000` → `2023-11-15 05:13:20 +0700`). Do not use epoch 0: IANA records
+   `Asia/Ho_Chi_Minh` as UTC+8 from 1960 until 1975-06-13, so 1970 renders as `+0800`.
 5. No alerts → no body emitted.
 
 `test_config.py`
