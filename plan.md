@@ -501,7 +501,7 @@ Run once after Phase 4, again before release:
 1. `python3 -m pytest -q` green with **no env vars set**.
 2. `docker compose up --build -d` → one service running, healthcheck green.
 3. `docker compose logs -f collector` → one tick per minute, no tracebacks.
-4. `curl -s 'localhost:8080/api/data?only=status'` → `stale_seconds` < 61,
+4. `curl -s 'localhost:9080/api/data?only=status'` → `stale_seconds` < 61,
    `notify_enabled` true, `cameras_reporting` equal to the camera count, counts rising.
 5. Phone browser → pause button reads `Notifying` and strip shows `Collector: alive`;
    all 32 cards paint on load (~1 s); page stays static; tap opens the zoom overlay.
