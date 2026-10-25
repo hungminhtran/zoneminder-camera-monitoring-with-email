@@ -87,6 +87,10 @@ def main() -> int:
     args = parser.parse_args()
 
     path = args.db or config.DB_PATH
+    if not config.DEV and not args.force:
+        print(f"refusing: {path} is the prod database; set DEV=1 or pass --force")
+        return 1
+
     db.init(path)
     conn = db.connect(path)
     try:

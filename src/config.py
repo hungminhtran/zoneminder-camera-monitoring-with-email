@@ -7,7 +7,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = SCRIPT_DIR / "static"
 APEXCHARTS_DIR = SCRIPT_DIR.parent / "apexcharts-js"
 
-DB_PATH = Path(os.environ.get("DB_PATH", SCRIPT_DIR / "zoneminder_monitoring.db"))
+DEV = os.environ.get("DEV", "0").strip().lower() in {"1", "true", "yes"}
+ENV_NAME = "dev" if DEV else "prod"
+
+DB_DIR = Path(os.environ.get("DB_DIR", SCRIPT_DIR.parent))
+DB_NAME = f"{ENV_NAME}_zoneminder_monitoring.db"
+DB_PATH = Path(os.environ.get("DB_PATH", DB_DIR / DB_NAME))
+
 SAMPLE_SECONDS = int(os.environ.get("SAMPLE_SECONDS", "60"))
 RETENTION_DAYS = float(os.environ.get("RETENTION_DAYS", "2"))
 LOW_FPS_THRESHOLD = float(os.environ.get("LOW_FPS_THRESHOLD", "18"))

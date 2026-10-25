@@ -123,3 +123,31 @@ def test_status_carries_threshold_and_timezone(conn):
     assert payload["threshold"] == 18.0
     assert payload["tz"] == "Asia/Ho_Chi_Minh"
     assert payload["as_of"] == int(NOW)
+
+
+def test_record_db_size_appends_first_sample():
+    samples = []
+
+    assert web.record_db_size(samples, NOW, 8_000_000) is True
+    assert samples == [(int(NOW), 8_000_000)]
+
+
+def test_record_db_size_skips_within_interval():
+    samples = [(int(NOW) - 60, 8_000_000)]
+
+    assert web.record_db_size(samples, NOW, 8_100_000) is False
+    assert samples == [(int(NOW) - 60, 8_000_000)]
+
+
+def test_record_db_size_appends_after_interval():
+    samples = [(int(NOW) - 3600, 8_000_000)]
+
+    assert web.record_db_size(samples, NOW, 8_100_000) is True
+    assert samples[-1] == (int(NOW), 8_100_000)
+
+
+def test_record_db_size_ignores_missing_file():
+    samples = [(int(NOW) - 3600, 8_000_000)]
+
+    assert web.record_db_size(samples, NOW, 0) is False
+    assert len(samples) == 1

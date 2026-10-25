@@ -51,8 +51,14 @@
   }
   .res { color: #57606a; font-size: 11px; }
   .fps { color: #1d4ed8; font-weight: 600; }
-  .card.expanded { position: fixed; inset: 8px; z-index: 10; background: #fff; cursor: default; }
-  .apexcharts-toolbar svg { transform: scale(1.4); }
+  .overlay {
+    position: fixed; inset: 0; z-index: 10; background: #fff;
+    padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .overlay[hidden] { display: none; }
+  .overlay-bar { display: flex; align-items: center; gap: 8px; }
+  .overlay-bar h2 { font-size: 15px; margin: 0; flex: 1 1 auto; }
+  #overlay-chart { flex: 1 1 auto; min-height: 0; }
 </style>
 </head>
 <body>
@@ -71,20 +77,34 @@
 
 <main id="grid" class="grid"></main>
 
+<div id="overlay" class="overlay" hidden>
+  <div class="overlay-bar">
+    <h2 id="overlay-title"></h2>
+    <button id="overlay-close">close</button>
+  </div>
+  <div id="overlay-chart"></div>
+</div>
+
 <script>
 const state = {
   tz: "Asia/Ho_Chi_Minh",
   interval: 60,
+  threshold: 18,
   notifyEnabled: true,
   charts: {},
   cards: {},
-  expanded: null,
+  series: {},
+  overlayChart: null,
+  overlaySource: null,
 };
 
 const grid = document.getElementById("grid");
 const strip = document.getElementById("strip");
 const sampleBar = document.getElementById("sample-bar");
 const controlError = document.getElementById("control-error");
+const overlayEl = document.getElementById("overlay");
+const overlayTitle = document.getElementById("overlay-title");
+const overlayChartEl = document.getElementById("overlay-chart");
 
 function formatBytes(bytes) {
   if (bytes === null || bytes === undefined) return "-";
@@ -154,19 +174,19 @@ function renderStrip(status) {
   strip.innerHTML = parts.join("");
 }
 
-function chartOptions(camera, threshold) {
+function chartOptions(camera, threshold, height, interactive) {
   const fps = camera.points.map(p => [p[0] * 1000, p[1]]);
   const bandwidth = camera.points.map(p => [p[0] * 1000, p[2]]);
 
   return {
     chart: {
       type: "line",
-      height: 200,
+      height: height,
       fontFamily: "inherit",
       animations: { enabled: false },
-      zoom: { enabled: true, type: "x" },
+      zoom: { enabled: interactive, type: "x" },
       toolbar: {
-        show: true,
+        show: interactive,
         autoSelected: "zoom",
         tools: {
           download: false, selection: true, zoom: true,
@@ -217,22 +237,30 @@ function chartOptions(camera, threshold) {
   };
 }
 
-function toggleExpanded(source) {
-  const wasExpanded = state.expanded;
+function openOverlay(source) {
+  const series = state.series[source];
+  if (!series) return;
 
-  if (wasExpanded !== null) {
-    state.cards[wasExpanded].classList.remove("expanded");
-    state.charts[wasExpanded].updateOptions({ chart: { height: 200 } });
-    state.expanded = null;
+  closeOverlay();
+  overlayTitle.textContent = source;
+  overlayEl.hidden = false;
+
+  const height = Math.max(320, window.innerHeight - 120);
+  state.overlayChart = new ApexCharts(
+    overlayChartEl,
+    chartOptions(series, state.threshold, height, true)
+  );
+  state.overlayChart.render();
+  state.overlaySource = source;
+}
+
+function closeOverlay() {
+  if (state.overlayChart !== null) {
+    state.overlayChart.destroy();
+    state.overlayChart = null;
   }
-  if (wasExpanded === source) return;
-
-  state.cards[source].classList.add("expanded");
-  state.charts[source].updateOptions({
-    chart: { height: Math.max(320, window.innerHeight - 180) },
-  });
-  state.expanded = source;
-  window.dispatchEvent(new Event("resize"));
+  state.overlaySource = null;
+  overlayEl.hidden = true;
 }
 
 function buildCard(camera, series, status) {
@@ -252,27 +280,28 @@ function buildCard(camera, series, status) {
   card.querySelector(".fps").textContent =
     camera.fps === null || camera.fps === undefined ? "-" : Number(camera.fps).toFixed(1);
 
-  card.addEventListener("click", event => {
-    if (event.target.closest(".apexcharts-toolbar")) return;
-    toggleExpanded(camera.source);
+  card.addEventListener("click", () => {
+    openOverlay(camera.source);
   });
 
   grid.appendChild(card);
 
   const chart = new ApexCharts(
     card.querySelector(".chart"),
-    chartOptions(series, status.threshold)
+    chartOptions(series, status.threshold, 200, false)
   );
   chart.render();
 
   state.cards[camera.source] = card;
   state.charts[camera.source] = chart;
+  state.series[camera.source] = series;
 }
 
 function render(data) {
   const status = data.status;
   state.tz = status.tz;
   state.interval = status.sample_seconds;
+  state.threshold = status.threshold;
   state.notifyEnabled = status.notify_enabled;
 
   renderStrip(status);
@@ -281,10 +310,11 @@ function render(data) {
     "as of " + formatDateTime(status.as_of * 1000);
   updateToggle();
 
+  closeOverlay();
   Object.values(state.charts).forEach(chart => chart.destroy());
   state.charts = {};
   state.cards = {};
-  state.expanded = null;
+  state.series = {};
   grid.innerHTML = "";
 
   const seriesBySource = new Map(
@@ -337,6 +367,8 @@ async function sendControl(enable) {
 document.getElementById("toggle").addEventListener("click", () => {
   sendControl(!state.notifyEnabled);
 });
+
+document.getElementById("overlay-close").addEventListener("click", closeOverlay);
 
 fetch("/api/data")
   .then(response => response.json())

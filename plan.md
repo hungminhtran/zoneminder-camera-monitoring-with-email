@@ -50,7 +50,7 @@ Out of scope:
 ```mermaid
 graph LR
   ZM[ZoneMinder] -->|1/min| C[collector thread]
-  C -->|insert| DB[(zoneminder_monitoring.db ~8MB)]
+  C -->|insert| DB[(dev_/prod_zoneminder_monitoring.db ~8MB)]
   C -->|alert| SMTP[Gmail SMTP]
   W[uvicorn thread] --> DB
   W --> P[Phone browser]
@@ -63,6 +63,10 @@ graph LR
 5. SQLite WAL: one writer, several readers, same file, no IPC.
 6. If the collector thread ever dies, the web side stays up and the status strip reports
    `Collector: stale` — the self-check covers the merged process.
+7. `docker-entrypoint.sh` runs before the app and always logs its decision. With `DEV=1`
+   it seeds the bind-mounted `/data` database, and `tools/seed.py`'s own guard refuses if
+   real (non-`SEED_`) samples are present. With `DEV=0` it does nothing and the app's
+   `db.init()` creates an empty schema for the collector.
 
 ## 5. Files
 
@@ -89,8 +93,10 @@ graph LR
 | `tests/test_status.py` | status strip values |
 | `Dockerfile` | single image, single process |
 | `docker-compose.yml` | one service |
+| `docker-entrypoint.sh` | seeds on first start when `DEV=1`, then execs CMD |
 | `.dockerignore` | keeps the image small |
 | `pytest.ini` | `testpaths = tests`, `pythonpath = src` |
+| `pyrightconfig.json` | `extraPaths: ["src"]` so editors resolve `import config` from `tools/` too |
 | `requirements.txt` / `requirements-dev.txt` | runtime / pytest |
 
 Deleted: `run.sh`, `monitor_config.json`.
@@ -108,7 +114,10 @@ Deleted: `run.sh`, `monitor_config.json`.
    (missing means `1`) and `seeded` = `1` when the database came from `tools/seed.py`.
    Nothing clears `seeded` automatically: only `tools/seed.py --clear` or a fresh database
    does, and the collector logs a warning on every start while it is set.
-6. Database file: `zoneminder_monitoring.db`.
+6. Database file name carries the environment: `dev_zoneminder_monitoring.db` when
+   `DEV=1`, `prod_zoneminder_monitoring.db` otherwise. It sits in `DB_DIR`, which defaults
+   to the project root (`./`) locally and `/data` in the container — the same folder as
+   `docker-compose.yml`, never inside `src/`.
 7. No secondary index; prune through the PK range per camera.
 8. PRAGMAs: WAL, `synchronous=NORMAL`, `busy_timeout=5000`, `journal_size_limit=1MB`.
 9. File reaches steady state after 2 days, then reuses pages. No `auto_vacuum`.
@@ -124,11 +133,17 @@ Deleted: `run.sh`, `monitor_config.json`.
 5. `SAMPLE_SECONDS=60`.
 6. `RETENTION_DAYS=2`.
 7. `DISPLAY_TZ=Asia/Ho_Chi_Minh`.
-8. `DB_PATH=/data/zoneminder_monitoring.db` — path inside the container.
-9. `DB_HOST_DIR=./data` — host folder bind-mounted to `/data`, so the database lives
-   outside the container and images can be rebuilt/replaced without losing history.
-10. `PAUSE_PASSPHRASE` — required to pause/resume email notifications from the UI.
-11. Truth is the environment; Compose uses `env_file: .env`.
+8. `DB_DIR=/data` — folder inside the container. The file name comes from `DEV`, so the
+   volume holds `dev_…` and `prod_…` side by side without overwriting each other.
+9. `DB_PATH` — full override of folder and name, used only by tests and one-off tooling.
+10. `DB_HOST_DIR=./` — host folder bind-mounted to `/data`, defaulting to the folder that
+    holds `docker-compose.yml`, so `dev_…db` / `prod_…db` appear right beside it and
+    survive image rebuilds.
+11. `PAUSE_PASSPHRASE` — required to pause/resume email notifications from the UI.
+12. `DEV=0` — `1` switches the file name to `dev_…`, seeds fake data on container start,
+    and shows the `SAMPLE DATA` bar. Production leaves it `0`; the collector creates and
+    fills the `prod_…` file itself.
+13. Truth is the environment; Compose uses `env_file: .env`.
 
 ## 8. Alert rules (unchanged behaviour)
 
@@ -187,12 +202,15 @@ if not db.notify_enabled(conn):
 6. **Each card**: name, resolution, current fps, status dot, one dual-axis chart
    (FPS left, KB/s right, dashed threshold). Nothing more.
 7. **No timers, no polling, no refresh button.** Reloading is the browser's job.
-8. **Tap a card → zoom overlay** — ApexCharts' own zoom, no custom controls:
-   - `xaxis.type: 'datetime'`, `chart.zoom.enabled: true`;
-   - `toolbar.tools: { download: false, selection: true, zoomin: true, zoomout: true,
-     pan: true, reset: true }`;
-   - one CSS line to enlarge the icons for touch:
-     `.apexcharts-toolbar svg { transform: scale(1.4); }`;
+8. **Tap a card → overlay** — a second chart instance configured entirely through
+   ApexCharts options; **no CSS overrides of library internals**:
+   - inline cards: `toolbar.show: false`, `zoom.enabled: false`. 32 visible toolbars would
+     be ~190 icons of clutter, and touch drag-zoom fights page scrolling;
+   - overlay: `toolbar.show: true`, `zoom.enabled: true`, `xaxis.type: 'datetime'`;
+   - `toolbar.tools: { download: false, selection: true, zoom: true, zoomin: true,
+     zoomout: true, pan: true, reset: true }`;
+   - the overlay chart is created on tap and `destroy()`ed on close, so exactly one
+     interactive chart exists at a time and no stale toolbar can linger;
    All data is already in the browser, so zoom and pan never touch the server.
 9. **Pause control** — a passphrase input and one button. The button label *is* the
    `Email on drop` state (`Notifying` / `Paused`), so no separate indicator is needed.
@@ -304,8 +322,10 @@ and parametrize the `extract()` tests over its actual entries instead of inventi
 1. Create `src/config.py` — settings, `required()`, `flag()`, `tz()`.
 2. Create `src/db.py` — prefixed schema, `connect(path=None)`, `init()`, queries.
 3. Create `requirements.txt`, `requirements-dev.txt`, `pytest.ini`.
-4. Create `Dockerfile`, `docker-compose.yml`, `.dockerignore` **first**, with
-   `src/web.py` as a minimal placeholder so `docker compose up` works immediately.
+4. Create `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `docker-entrypoint.sh`
+   **first**, with `src/web.py` as a minimal placeholder so `docker compose up` works
+   immediately. `DEV=1` seeds the bind-mounted database on first start; `DEV=0` leaves
+   creation to the app.
 5. Create `tools/seed.py` — fills a database with synthetic data so the UI can be built
    without ZoneMinder running. Everything it writes must be **obviously fake**:
    - camera names `SEED_cam_01` … `SEED_cam_32`;
@@ -374,7 +394,7 @@ first, run it against seeded data, and every later phase can be verified by look
 3. Rebuild the image from scratch and confirm history survives.
 4. Done when: §16 verification passes end to end.
 
-## 14. Unit test inventory (~69 cases)
+## 14. Unit test inventory (~74 cases)
 
 `test_notify.py`
 
@@ -450,8 +470,8 @@ first, run it against seeded data, and every later phase can be verified by look
 1. Correct passphrase → allowed.
 2. Wrong passphrase → rejected.
 3. Empty / `None` passphrase, or unset `PAUSE_PASSPHRASE` → rejected.
-4. `set_control(0)` then read back through a new connection → disabled, i.e. survives
-   a restart.
+4. `set_setting("notify_enabled", "0")` then read back through a new connection →
+   still disabled, i.e. survives a restart.
 
 `test_status.py`
 
@@ -464,7 +484,9 @@ first, run it against seeded data, and every later phase can be verified by look
 7. `Database: 7.8 MB` from the newest size sample, `+0.1 MB / 24h` from the sample 24h back.
 8. Only one size sample → delta rendered as `-`.
 9. `db_size_trend` ignores samples older than 7 days.
-10. `seeded=1` → payload raises a `sample_data` flag; absent or `0` → false.
+10. `seeded=1` → `status.seeded` true; absent or `0` → false.
+11. `record_db_size` appends the first sample, skips inside the interval, appends after
+    it, and ignores a zero size.
 
 `test_db.py`
 
@@ -477,7 +499,7 @@ first, run it against seeded data, and every later phase can be verified by look
 7. `camera_overview` returns the latest sample per camera.
 8. Notifications returned newest first.
 9. `status` reports stale seconds for a fresh sample.
-10. `set_control` / `get_control` round-trip, missing key → default.
+10. `set_setting` / `get_setting` round-trip, missing key → default.
 
 ## 15. Manual e2e checklist (replaces network tests)
 
@@ -543,7 +565,13 @@ Run once after Phase 4, again before release:
     page whose purpose is self-verification. `?only=status` covers cheap health checks.
 15. **Minimal UI** — four strip indicators, four fields per card, one control. Everything
     removed had a duplicate elsewhere on the same screen.
-16. **Tests per phase** — a phase is done when its tests are green, not when code is written.
+16. **`DEV` lives in the entrypoint, not in Python** — production code has no dev branch.
+    The script always logs `DEV` and `DB_PATH` so a missing log line proves the image is
+    stale rather than the flag being ignored.
+17. **No CSS overrides of library internals** — no selectors matching `.apexcharts-*`,
+    no `transform: scale()` on icon SVGs, no forcing layout on library elements. Behaviour
+    comes from options and from creating the right instance for each context.
+18. **Tests per phase** — a phase is done when its tests are green, not when code is written.
 
 ## 18. Open items
 

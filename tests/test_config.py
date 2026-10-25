@@ -64,5 +64,56 @@ def test_defaults_when_unset(monkeypatch):
         importlib.reload(config)
 
 
+@pytest.fixture
+def fresh_config(monkeypatch):
+    def load(**env):
+        for key in ("DEV", "DB_DIR", "DB_PATH"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, str(value))
+        return importlib.reload(config)
+
+    yield load
+    monkeypatch.undo()
+    importlib.reload(config)
+
+
 def test_tz_returns_zoneinfo():
     assert config.tz().key == config.DISPLAY_TZ
+
+
+def test_default_database_lives_beside_the_project(fresh_config):
+    reloaded = fresh_config()
+
+    assert reloaded.DB_PATH.name == "prod_zoneminder_monitoring.db"
+    assert reloaded.DB_PATH.parent == reloaded.SCRIPT_DIR.parent
+    assert reloaded.DB_PATH.parent.name != "src"
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE"])
+def test_dev_flag_switches_the_database_name(fresh_config, value):
+    reloaded = fresh_config(DEV=value)
+
+    assert reloaded.ENV_NAME == "dev"
+    assert reloaded.DB_PATH.name == "dev_zoneminder_monitoring.db"
+
+
+@pytest.mark.parametrize("value", ["0", "false", ""])
+def test_prod_name_when_dev_is_off(fresh_config, value):
+    reloaded = fresh_config(DEV=value)
+
+    assert reloaded.ENV_NAME == "prod"
+    assert reloaded.DB_PATH.name == "prod_zoneminder_monitoring.db"
+
+
+def test_db_dir_is_honoured(fresh_config, tmp_path):
+    reloaded = fresh_config(DEV="1", DB_DIR=tmp_path)
+
+    assert reloaded.DB_PATH == tmp_path / "dev_zoneminder_monitoring.db"
+
+
+def test_explicit_db_path_wins(fresh_config, tmp_path):
+    target = tmp_path / "custom.db"
+    reloaded = fresh_config(DB_PATH=target)
+
+    assert reloaded.DB_PATH == target
