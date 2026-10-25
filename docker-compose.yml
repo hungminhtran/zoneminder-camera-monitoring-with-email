@@ -6,7 +6,7 @@ services:
     env_file: .env
     environment:
       DB_DIR: /data
-      DEV: 1
+      DEV: 0
     volumes:
       - ${DB_HOST_DIR:-./}:/data
     ports:

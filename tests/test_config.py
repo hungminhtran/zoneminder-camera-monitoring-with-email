@@ -3,6 +3,7 @@ import importlib
 import pytest
 
 import config
+import monitor
 
 
 def test_required_returns_value(monkeypatch):
@@ -80,6 +81,45 @@ def fresh_config(monkeypatch):
 
 def test_tz_returns_zoneinfo():
     assert config.tz().key == config.DISPLAY_TZ
+
+
+def test_load_settings_none_when_incomplete(monkeypatch):
+    for name in monitor.COLLECTOR_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+    assert monitor.load_settings() is None
+
+
+def test_load_settings_reads_values(monkeypatch):
+    values = {
+        "ZM_URL": "http://zm/zm/",
+        "ZM_USER": "admin",
+        "ZM_PASSWORD": "secret",
+        "EMAIL_FROM": "from@example.com",
+        "EMAIL_PASS": "app-password",
+        "EMAIL_TO": "to@example.com",
+        "ZM_INSECURE": "0",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+    settings = monitor.load_settings()
+
+    assert settings is not None
+    assert settings.zm_url == "http://zm/zm"
+    assert settings.zm_password == "secret"
+    assert settings.verify is True
+
+
+def test_load_settings_honours_insecure(monkeypatch):
+    for name in monitor.COLLECTOR_ENV:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("ZM_INSECURE", "1")
+
+    settings = monitor.load_settings()
+
+    assert settings is not None
+    assert settings.verify is False
 
 
 def test_default_database_lives_beside_the_project(fresh_config):

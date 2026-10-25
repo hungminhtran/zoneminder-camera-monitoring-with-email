@@ -121,8 +121,10 @@ Deleted: `run.sh`, `monitor_config.json`.
 7. No secondary index; prune through the PK range per camera.
 8. PRAGMAs: WAL, `synchronous=NORMAL`, `busy_timeout=5000`, `journal_size_limit=1MB`.
 9. File reaches steady state after 2 days, then reuses pages. No `auto_vacuum`.
-10. **Database-size history lives in RAM only** — a `deque(maxlen=168)` of hourly
-    `(ts, bytes)` samples. Storing it in SQLite would grow the very file it measures.
+10. **Database-size history lives in RAM only** — `db.db_size_samples`, a
+    `deque(maxlen=168)` of hourly `(ts, bytes)` samples, fed by the collector loop and by
+    `/api/data` (both rate-limited to one sample per hour). Storing it in SQLite would grow
+    the very file it measures.
 
 ## 7. Configuration
 
@@ -382,14 +384,21 @@ first, run it against seeded data, and every later phase can be verified by look
 
 ### Phase 4 — Collector wiring (keeps the proven I/O)
 
-1. Move `send_gmail()` and the ZoneMinder client into the new shape — internals unchanged,
-   return values and retry behaviour now exceptions instead of `sys.exit`.
-2. Add `tick(conn, client)` and `deliver(conn, slot, alerts)`; sample the database size
-   hourly into the in-RAM 7-day `deque`; apply the pause gate before `deliver()`.
-3. Start the loop from the FastAPI `lifespan` hook so one process serves both roles.
-4. Add `build_email_body(alerts, ts, threshold)` + `tests/test_email_body.py`.
-5. Delete `load_state`, `save_state`, `STATE_FILE`, `monitor_config.json`.
-6. Done when: with the dashboard open, real samples appear and the strip flips to
+1. `Settings` + `load_settings()` in `src/monitor.py` — returns `None` and logs the missing
+   names instead of exiting, so a missing credential disables collection without taking the
+   dashboard down.
+2. `send_gmail()` and `ZmClient` ported from `demo_monitor.py`: `sys.exit` → `RuntimeError`,
+   refresh token retained, `access_token_expires` honoured, one `requests.Session`.
+   `requests` is imported inside `ZmClient.__init__` so `import monitor` needs no HTTP libs.
+3. `tick(conn, client, now)` — samples every live camera, feeds `should_notify` with the
+   prior window, persists `next_at`/`step`, returns the alerts.
+4. `deliver(conn, ts, alerts, settings)` — one batched email, one `notifications` row per
+   camera with `email_ok`/`error`.
+5. `run(stop_event, settings)` — minute-aligned `stop_event.wait(...)` loop, tick in
+   try/except, prune, and `db.record_db_size` each pass.
+6. Start the thread from the FastAPI `lifespan` hook (`threading.Thread(daemon=True)`),
+   stop it via the event on shutdown. **Not** from `docker-entrypoint.sh`.
+7. Done when: with the dashboard open, real samples appear and the strip flips to
    `Collector: alive`; §15 checklist passes.
 
 ### Phase 5 — Packaging and release
@@ -584,7 +593,15 @@ Run once after Phase 4, again before release:
 17. **No CSS overrides of library internals** — no selectors matching `.apexcharts-*`,
     no `transform: scale()` on icon SVGs, no forcing layout on library elements. Behaviour
     comes from options and from creating the right instance for each context.
-18. **Tests per phase** — a phase is done when its tests are green, not when code is written.
+18. **Collector runs in a thread, not a process** — the loop is I/O-bound (a 60s wait, one
+    HTTP call, a few SQLite writes), so the GIL is irrelevant, and FastAPI runs sync
+    endpoints in a threadpool so a blocking SMTP call cannot stall request handling. A
+    separate process would cost the shared in-RAM size deque, PID 1 signal forwarding,
+    and a second copy of the interpreter.
+19. **Started from `lifespan`, not the entrypoint** — the loop must live in the same
+    process as the web app to share the deque; `lifespan` also covers local `uvicorn`,
+    `--reload`, and `docker compose run`, none of which go through the entrypoint.
+20. **Tests per phase** — a phase is done when its tests are green, not when code is written.
 
 ## 18. Open items
 

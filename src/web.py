@@ -1,6 +1,7 @@
+import logging
 import secrets
+import threading
 import time
-from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -11,32 +12,9 @@ from pydantic import BaseModel
 
 import config
 import db
+import monitor
 
-db_size_samples: deque[tuple[int, int]] = deque(maxlen=config.DB_SIZE_SAMPLE_COUNT)
-db_size_window_s = config.DB_SIZE_SAMPLE_COUNT * config.DB_SIZE_SAMPLE_INTERVAL_S
-
-
-def db_size_trend(samples, now, window_s=config.SECONDS_PER_DAY,
-                  retention_s=db_size_window_s):
-    fresh = [sample for sample in samples if now - sample[0] <= retention_s]
-    if not fresh:
-        return {"bytes": None, "delta": None}
-    current = fresh[-1][1]
-    if len(fresh) < 2:
-        return {"bytes": current, "delta": None}
-    cutoff = now - window_s
-    older = [sample for sample in fresh if sample[0] <= cutoff]
-    baseline = older[-1][1] if older else fresh[0][1]
-    return {"bytes": current, "delta": current - baseline}
-
-
-def record_db_size(samples, now, size_bytes, interval_s=config.DB_SIZE_SAMPLE_INTERVAL_S):
-    if size_bytes <= 0:
-        return False
-    if samples and now - samples[-1][0] < interval_s:
-        return False
-    samples.append((int(now), int(size_bytes)))
-    return True
+log = logging.getLogger("nvr.web")
 
 
 def check_passphrase(given: str | None, expected: str | None) -> bool:
@@ -67,7 +45,7 @@ def build_series_payload(rows, threshold: float, tz_name: str) -> dict:
 def build_status_payload(conn, now: float, size_samples=None) -> dict:
     newest = db.newest_ts(conn)
     last = db.latest_notification(conn)
-    samples = db_size_samples if size_samples is None else size_samples
+    samples = db.db_size_samples if size_samples is None else size_samples
     reporting_since = int(now) - 2 * config.SAMPLE_SECONDS
     return {
         "as_of": int(now),
@@ -80,7 +58,7 @@ def build_status_payload(conn, now: float, size_samples=None) -> dict:
         "threshold": config.LOW_FPS_THRESHOLD,
         "sample_seconds": config.SAMPLE_SECONDS,
         "tz": config.DISPLAY_TZ,
-        "database": db_size_trend(samples, now),
+        "database": db.db_size_trend(samples, now),
         "last_email": None if last is None else {
             "ts": int(last["ts"]),
             "source": last["source"],
@@ -110,8 +88,30 @@ class ControlRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     db.init()
-    yield
+
+    stop = threading.Event()
+    settings = monitor.load_settings()
+    worker = None
+    if settings is not None:
+        worker = threading.Thread(
+            target=monitor.run, args=(stop, settings), name="collector", daemon=True
+        )
+        worker.start()
+        log.info("collector thread started")
+    else:
+        log.warning("collector thread not started: missing settings")
+
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker is not None:
+            worker.join(timeout=5)
 
 
 app = FastAPI(title="ZoneMinder monitoring", lifespan=lifespan)
@@ -128,7 +128,7 @@ def index() -> FileResponse:
 @app.get("/api/data")
 def data(only: str | None = None):
     now = time.time()
-    record_db_size(db_size_samples, now, db.file_size(config.DB_PATH))
+    db.record_db_size(db.db_size_samples, now, db.file_size(config.DB_PATH))
     conn = db.connect()
     try:
         conn.execute("BEGIN")

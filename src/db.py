@@ -1,10 +1,13 @@
 import sqlite3
+from collections import deque
 from pathlib import Path
 
 import config
 
 PREFIX = "zoneminder_monitoring_"
 
+DB_SIZE_WINDOW_S = config.DB_SIZE_SAMPLE_COUNT * config.DB_SIZE_SAMPLE_INTERVAL_S
+db_size_samples: deque = deque(maxlen=config.DB_SIZE_SAMPLE_COUNT)
 SAMPLES = f"{PREFIX}samples"
 CAMERAS = f"{PREFIX}cameras"
 NOTIFICATIONS = f"{PREFIX}notifications"
@@ -220,3 +223,27 @@ def file_size(path: Path) -> int:
         if candidate.exists():
             total += candidate.stat().st_size
     return total
+
+
+def record_db_size(samples, now, size_bytes,
+                   interval_s: int = config.DB_SIZE_SAMPLE_INTERVAL_S) -> bool:
+    if size_bytes <= 0:
+        return False
+    if samples and now - samples[-1][0] < interval_s:
+        return False
+    samples.append((int(now), int(size_bytes)))
+    return True
+
+
+def db_size_trend(samples, now, window_s: int = config.SECONDS_PER_DAY,
+                  retention_s: int = DB_SIZE_WINDOW_S) -> dict:
+    fresh = [sample for sample in samples if now - sample[0] <= retention_s]
+    if not fresh:
+        return {"bytes": None, "delta": None}
+    current = fresh[-1][1]
+    if len(fresh) < 2:
+        return {"bytes": current, "delta": None}
+    cutoff = now - window_s
+    older = [sample for sample in fresh if sample[0] <= cutoff]
+    baseline = older[-1][1] if older else fresh[0][1]
+    return {"bytes": current, "delta": current - baseline}
