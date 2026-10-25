@@ -1,7 +1,7 @@
 import monitor
 
 NOW = 1_700_000_000.0
-PARAMS = dict(threshold=18.0, min_samples=3, max_samples=3, backoff_h=[1, 2, 4, 8, 24])
+PARAMS = dict(threshold=18.0, window_size=3, backoff_h=[1, 2, 4, 8, 24])
 
 
 def ladder(count):
@@ -67,26 +67,29 @@ def test_healthy_sample_resets_the_ladder():
         quiet.samples, quiet.next_at, quiet.step, 30.0, NOW, **PARAMS
     )
 
-    assert healthy.avg >= 18.0
+    assert max(healthy.samples) > 18.0
     assert healthy.next_at == 0.0
     assert healthy.step == 0
 
 
-def test_recovery_then_drop_alerts_immediately():
+def test_recovery_then_drop_needs_a_full_window_again():
     first = ladder(1)[0]
-    quiet = monitor.should_notify(first.samples, first.next_at, first.step, 30.0, NOW, **PARAMS)
-    healthy = monitor.should_notify(
-        quiet.samples, quiet.next_at, quiet.step, 30.0, NOW, **PARAMS
+    recovered = monitor.should_notify(
+        first.samples, first.next_at, first.step, 30.0, NOW, **PARAMS
     )
 
-    low = monitor.should_notify(healthy.samples, healthy.next_at, healthy.step, 5.0, NOW, **PARAMS)
-    still_low = monitor.should_notify(
-        low.samples, low.next_at, low.step, 5.0, NOW + 60, **PARAMS
-    )
+    samples, next_at, step = recovered.samples, 0.0, 0
+    now = NOW
+    decisions = []
+    for _ in range(4):
+        decision = monitor.should_notify(samples, next_at, step, 5.0, now, **PARAMS)
+        decisions.append(decision)
+        samples, next_at, step = decision.samples, decision.next_at, decision.step
+        now += 60
 
-    assert still_low.notify is True
-    assert still_low.next_at == NOW + 60 + 3600
-    assert still_low.step == 1
+    assert [decision.notify for decision in decisions] == [False, False, True, False]
+    assert decisions[2].step == 1
+    assert decisions[2].next_at == NOW + 120 + 3600
 
 
 def test_now_far_past_next_at_alerts_once():

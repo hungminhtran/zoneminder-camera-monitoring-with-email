@@ -52,14 +52,17 @@ def test_flag_absent(monkeypatch):
 
 
 def test_defaults_when_unset(monkeypatch):
-    for name in ("SAMPLE_SECONDS", "RETENTION_DAYS", "LOW_FPS_THRESHOLD", "DISPLAY_TZ"):
+    for name in ("SAMPLE_SECONDS", "RETENTION_DAYS", "LOW_FPS_THRESHOLD", "DISPLAY_TZ",
+                 "ALERT_WINDOW_S"):
         monkeypatch.delenv(name, raising=False)
     reloaded = importlib.reload(config)
     try:
         assert reloaded.SAMPLE_SECONDS == 60
         assert reloaded.RETENTION_DAYS == 2.0
-        assert reloaded.LOW_FPS_THRESHOLD == 18.0
+        assert reloaded.LOW_FPS_THRESHOLD == 3.0
         assert reloaded.DISPLAY_TZ == "Asia/Ho_Chi_Minh"
+        assert reloaded.ALERT_WINDOW_S == 300
+        assert reloaded.ALERT_WINDOW_SAMPLES == 5
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -128,6 +131,13 @@ def test_default_database_lives_beside_the_project(fresh_config):
     assert reloaded.DB_PATH.name == "prod_zoneminder_monitoring.db"
     assert reloaded.DB_PATH.parent == reloaded.SCRIPT_DIR.parent
     assert reloaded.DB_PATH.parent.name != "src"
+
+
+@pytest.mark.parametrize("interval, expected", [(60, 5), (30, 10), (120, 3), (300, 1)])
+def test_alert_window_samples_follows_the_interval(fresh_config, interval, expected):
+    reloaded = fresh_config(SAMPLE_SECONDS=interval, ALERT_WINDOW_S=300)
+
+    assert reloaded.ALERT_WINDOW_SAMPLES == expected
 
 
 @pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE"])

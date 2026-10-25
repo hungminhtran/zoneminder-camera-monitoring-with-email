@@ -45,6 +45,7 @@
   }
   .card { border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 10px 4px; cursor: pointer; }
   .card header { display: flex; align-items: baseline; gap: 8px; margin: 0 0 2px; }
+  .card .chart + .chart { margin-top: 2px; }
   .card h2 {
     font-size: 13px; margin: 0; flex: 1 1 auto;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -58,7 +59,7 @@
   .overlay[hidden] { display: none; }
   .overlay-bar { display: flex; align-items: center; gap: 8px; }
   .overlay-bar h2 { font-size: 15px; margin: 0; flex: 1 1 auto; }
-  #overlay-chart { flex: 1 1 auto; min-height: 0; }
+  #overlay-fps, #overlay-bw { flex: 1 1 auto; min-height: 0; }
 </style>
 </head>
 <body>
@@ -82,7 +83,8 @@
     <h2 id="overlay-title"></h2>
     <button id="overlay-close">close</button>
   </div>
-  <div id="overlay-chart"></div>
+  <div id="overlay-fps"></div>
+  <div id="overlay-bw"></div>
 </div>
 
 <script>
@@ -94,7 +96,7 @@ const state = {
   charts: {},
   cards: {},
   series: {},
-  overlayChart: null,
+  overlayCharts: [],
   overlaySource: null,
 };
 
@@ -104,7 +106,8 @@ const sampleBar = document.getElementById("sample-bar");
 const controlError = document.getElementById("control-error");
 const overlayEl = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlay-title");
-const overlayChartEl = document.getElementById("overlay-chart");
+const overlayFpsEl = document.getElementById("overlay-fps");
+const overlayBwEl = document.getElementById("overlay-bw");
 
 function formatBytes(bytes) {
   if (bytes === null || bytes === undefined) return "-";
@@ -174,19 +177,24 @@ function renderStrip(status) {
   strip.innerHTML = parts.join("");
 }
 
-function chartOptions(camera, threshold, height, interactive) {
-  const fps = camera.points.map(p => [p[0] * 1000, p[1]]);
-  const bandwidth = camera.points.map(p => [p[0] * 1000, p[2]]);
+const METRICS = {
+  fps: { index: 1, color: "#1d4ed8", label: "fps", decimals: 1 },
+  bandwidth: { index: 2, color: "#c2410c", label: "KB/s", decimals: 1 },
+};
 
-  return {
+function chartOptions(camera, metric, options) {
+  const spec = METRICS[metric];
+  const data = camera.points.map(point => [point[0] * 1000, point[spec.index]]);
+
+  const config = {
     chart: {
       type: "line",
-      height: height,
+      height: options.height,
       fontFamily: "inherit",
       animations: { enabled: false },
-      zoom: { enabled: interactive, type: "x" },
+      zoom: { enabled: options.interactive, type: "x" },
       toolbar: {
-        show: interactive,
+        show: options.interactive,
         autoSelected: "zoom",
         tools: {
           download: false, selection: true, zoom: true,
@@ -194,11 +202,8 @@ function chartOptions(camera, threshold, height, interactive) {
         },
       },
     },
-    series: [
-      { name: "fps", data: fps },
-      { name: "KB/s", data: bandwidth },
-    ],
-    colors: ["#1d4ed8", "#c2410c"],
+    series: [{ name: spec.label, data: data }],
+    colors: [spec.color],
     stroke: { width: 1, curve: "straight" },
     markers: { size: 0 },
     dataLabels: { enabled: false },
@@ -206,35 +211,39 @@ function chartOptions(camera, threshold, height, interactive) {
     noData: { text: "no samples" },
     xaxis: {
       type: "datetime",
-      labels: { datetimeUTC: false, formatter: ms => formatTime(ms) },
+      labels: {
+        show: options.showTimeAxis,
+        datetimeUTC: false,
+        formatter: ms => formatTime(ms),
+      },
     },
-    yaxis: [
-      {
-        title: { text: "fps", style: { color: "#1d4ed8", fontSize: "10px" } },
-        labels: { formatter: value => value === null ? "" : value.toFixed(0) },
+    yaxis: {
+      title: { text: spec.label, style: { color: spec.color, fontSize: "10px" } },
+      labels: {
+        formatter: value => value === null ? "" : value.toFixed(spec.decimals),
       },
-      {
-        opposite: true,
-        title: { text: "KB/s", style: { color: "#c2410c", fontSize: "10px" } },
-        labels: { formatter: value => value === null ? "" : value.toFixed(0) },
-      },
-    ],
+    },
     tooltip: {
-      shared: true,
       x: { formatter: ms => formatDateTime(ms) },
+      y: { formatter: value => value.toFixed(1) + " " + spec.label },
     },
-    annotations: {
+  };
+
+  if (metric === "fps" && options.threshold !== undefined) {
+    config.annotations = {
       yaxis: [{
-        y: threshold,
+        y: options.threshold,
         borderColor: "#cf222e",
         strokeDashArray: 5,
         label: {
-          text: "threshold " + threshold,
+          text: "threshold " + options.threshold,
           style: { background: "#cf222e", color: "#fff", fontSize: "9px" },
         },
       }],
-    },
-  };
+    };
+  }
+
+  return config;
 }
 
 function openOverlay(source) {
@@ -245,20 +254,29 @@ function openOverlay(source) {
   overlayTitle.textContent = source;
   overlayEl.hidden = false;
 
-  const height = Math.max(320, window.innerHeight - 120);
-  state.overlayChart = new ApexCharts(
-    overlayChartEl,
-    chartOptions(series, state.threshold, height, true)
-  );
-  state.overlayChart.render();
+  const height = Math.max(180, (window.innerHeight - 140) / 2);
+  state.overlayCharts = [
+    new ApexCharts(
+      overlayFpsEl,
+      chartOptions(series, "fps", {
+        height: height, interactive: true, showTimeAxis: false,
+        threshold: state.threshold,
+      })
+    ),
+    new ApexCharts(
+      overlayBwEl,
+      chartOptions(series, "bandwidth", {
+        height: height, interactive: true, showTimeAxis: true,
+      })
+    ),
+  ];
+  state.overlayCharts.forEach(chart => chart.render());
   state.overlaySource = source;
 }
 
 function closeOverlay() {
-  if (state.overlayChart !== null) {
-    state.overlayChart.destroy();
-    state.overlayChart = null;
-  }
+  state.overlayCharts.forEach(chart => chart.destroy());
+  state.overlayCharts = [];
   state.overlaySource = null;
   overlayEl.hidden = true;
 }
@@ -274,7 +292,8 @@ function buildCard(camera, series, status) {
   card.innerHTML =
     '<header><i class="dot ' + tone + '"></i>' +
     '<h2></h2><span class="res"></span><span class="fps"></span></header>' +
-    '<div class="chart"></div>';
+    '<div class="chart fps-chart"></div>' +
+    '<div class="chart bw-chart"></div>';
   card.querySelector("h2").textContent = camera.source;
   card.querySelector(".res").textContent = camera.resolution || "";
   card.querySelector(".fps").textContent =
@@ -286,14 +305,25 @@ function buildCard(camera, series, status) {
 
   grid.appendChild(card);
 
-  const chart = new ApexCharts(
-    card.querySelector(".chart"),
-    chartOptions(series, status.threshold, 200, false)
-  );
-  chart.render();
+  const charts = [
+    new ApexCharts(
+      card.querySelector(".fps-chart"),
+      chartOptions(series, "fps", {
+        height: 150, interactive: false, showTimeAxis: false,
+        threshold: status.threshold,
+      })
+    ),
+    new ApexCharts(
+      card.querySelector(".bw-chart"),
+      chartOptions(series, "bandwidth", {
+        height: 120, interactive: false, showTimeAxis: true,
+      })
+    ),
+  ];
+  charts.forEach(chart => chart.render());
 
   state.cards[camera.source] = card;
-  state.charts[camera.source] = chart;
+  state.charts[camera.source] = charts;
   state.series[camera.source] = series;
 }
 
@@ -311,7 +341,7 @@ function render(data) {
   updateToggle();
 
   closeOverlay();
-  Object.values(state.charts).forEach(chart => chart.destroy());
+  Object.values(state.charts).forEach(charts => charts.forEach(chart => chart.destroy()));
   state.charts = {};
   state.cards = {};
   state.series = {};

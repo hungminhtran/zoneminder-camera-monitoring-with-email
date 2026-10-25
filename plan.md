@@ -36,9 +36,10 @@ Out of scope:
 ## 3. Limits that drive the design
 
 1. 32 cameras × 1440 samples/day × 2 days = **92,160 rows**, **~8 MB** SQLite.
-2. Per chart: 2,880 points × 2 series = **5,760 points**.
-3. 32 charts at once = 32 instances × 5,760 points. Accepted as a one-time render on a
-   flagship; not acceptable as a per-minute re-render, which is why there is no polling.
+2. Per camera: two charts (fps, bandwidth) × 2,880 points = **5,760 points**.
+3. 32 cameras at once = **64 chart instances**, 184,320 points. Accepted as a one-time
+   render on a flagship; not acceptable as a per-minute re-render, which is why there is
+   no polling.
 4. Conclusion 1: SQLite, because fixed cost (4 KB) beats any server DB (≥90 MB).
 5. Conclusion 2: one page, browser-driven reload, **raw points — no server-side reduction**,
    so zooming never needs another request.
@@ -131,7 +132,10 @@ Deleted: `run.sh`, `monitor_config.json`.
 1. `ZM_URL`, `ZM_USER`, `ZM_PASSWORD` — ZoneMinder base URL and credentials.
 2. `ZM_INSECURE=0` — `1` skips TLS verification.
 3. `EMAIL_FROM`, `EMAIL_PASS`, `EMAIL_TO` — Gmail App Password.
-4. `LOW_FPS_THRESHOLD=18`.
+4. `LOW_FPS_THRESHOLD=3` — at or below this, a camera is treated as disconnected.
+5. `ALERT_WINDOW_S=300` — how long the camera must stay at or below the threshold
+   before an email goes out. Samples in the window = `ceil(window / SAMPLE_SECONDS)`, so
+   the default 300 s at 60 s sampling is 5 consecutive readings.
 5. `SAMPLE_SECONDS=60`.
 6. `RETENTION_DAYS=2`.
 7. `DISPLAY_TZ=Asia/Ho_Chi_Minh`.
@@ -147,18 +151,33 @@ Deleted: `run.sh`, `monitor_config.json`.
     fills the `prod_…` file itself.
 13. Truth is the environment; Compose uses `env_file: .env`.
 
-## 8. Alert rules (unchanged behaviour)
+## 8. Alert rules — "camera is disconnected"
 
-`should_notify(samples, next_at, step, fps, now, *, threshold, min_samples, max_samples, backoff_h) -> Decision`
+`should_notify(samples, next_at, step, fps, now, *, threshold, window_size, backoff_h) -> Decision`
 
-1. Append `fps`, keep last `max_samples`.
-2. Fewer than `min_samples` → no decision.
-3. Average ≥ threshold → reset `next_at=0`, `step=0`.
-4. Average < threshold and `next_at` not due → quiet.
-5. Average < threshold and `next_at` due (or `0`) → notify, advance backoff.
+1. Append `fps`, keep the last `window_size` samples.
+2. Fewer than `window_size` samples → no decision. Every check needs the full window.
+3. **Any** sample in the window above the threshold → reset `next_at=0`, `step=0`.
+4. Every sample at or below the threshold, `next_at` not due → quiet.
+5. Every sample at or below the threshold, `next_at` due (or `0`) → notify, advance
+   backoff.
 6. Ladder 1h → 2h → 4h → 8h → 24h; 24h is the ceiling.
 7. `now` is a parameter, never `time.time()` inside → tests fast-forward without sleeping.
-8. 3 samples required (≈3 min to confirm a drop).
+8. `threshold` is inclusive: `fps == 3` counts as down. 5 readings (≈5 min) required, and
+   **all five** must be low.
+
+Why "all below" instead of averaging:
+
+1. One camera can drop to 9 fps for a single minute among fourteen healthy ones. The mean
+   of the last three samples still fell below 18, so the old rule emailed on a blip. A
+   camera that is *disconnected* reports 0 for every reading, not one bad reading.
+2. Requiring the whole window means a transient dip is ignored without any tuning — the
+   recovery sample inside the window resets the ladder for free.
+3. The cost is latency: detection takes a full window (5 min) after the camera comes back
+   from a previous alert, because the ladder reset empties the evidence.
+4. `Monitor_Status.Status != "Connected"` would be a faster signal, but the column is not
+   stored and ZM reports `CaptureFPS` 0 in the same case, so the fps window already covers
+   it.
 
 Pause gate — one condition in `tick()`, right before the email block:
 
@@ -201,18 +220,22 @@ if not db.notify_enabled(conn):
    itself has to say when it was taken.
 4. **Conditional red bar** `SAMPLE DATA` across the top when `settings.seeded = 1`.
 5. **Single page** — responsive grid of cards (1 column on phone, 2–3 on desktop).
-6. **Each card**: name, resolution, current fps, status dot, one dual-axis chart
-   (FPS left, KB/s right, dashed threshold). Nothing more.
+6. **Each card**: name, resolution, current fps, status dot, and **two stacked
+   single-axis charts** — fps (150px, dashed threshold) above bandwidth (120px, KB/s).
+   One metric per chart: a dual axis put two unrelated scales on one plot and made both
+   hard to read. Only the lower chart carries x-axis labels, so the pair reads as one
+   figure.
 7. **No timers, no polling, no refresh button.** Reloading is the browser's job.
-8. **Tap a card → overlay** — a second chart instance configured entirely through
+8. **Tap a card → overlay** — a second pair of chart instances configured entirely through
    ApexCharts options; **no CSS overrides of library internals**:
-   - inline cards: `toolbar.show: false`, `zoom.enabled: false`. 32 visible toolbars would
-     be ~190 icons of clutter, and touch drag-zoom fights page scrolling;
-   - overlay: `toolbar.show: true`, `zoom.enabled: true`, `xaxis.type: 'datetime'`;
-   - `toolbar.tools: { download: false, selection: true, zoom: true, zoomin: true,
-     zoomout: true, pan: true, reset: true }`;
-   - the overlay chart is created on tap and `destroy()`ed on close, so exactly one
-     interactive chart exists at a time and no stale toolbar can linger;
+   - inline cards: `toolbar.show: false`, `zoom.enabled: false`. 64 visible toolbars would
+     be ~380 icons of clutter, and touch drag-zoom fights page scrolling;
+   - overlay: two charts (fps on top, bandwidth below), both `toolbar.show: true`,
+     `zoom.enabled: true`, `xaxis.type: 'datetime'`;
+   - `toolbar.tools: { download: false, selection: true, zoomin: true, zoomout: true,
+     pan: true, reset: true }`;
+   - created on tap and `destroy()`ed on close, so exactly two interactive charts exist at
+     a time and no stale toolbar can linger;
    All data is already in the browser, so zoom and pan never touch the server.
 9. **Pause control** — a passphrase input and one button. The button label *is* the
    `Email on drop` state (`Notifying` / `Paused`), so no separate indicator is needed.
@@ -224,8 +247,8 @@ Cut from the first draft, and why:
 2. `Email on drop` indicator — folded into the pause button, which shows state anyway.
 3. `Data: LIVE` row — replaced by a bar that appears only when seeded. A permanent "LIVE"
    is noise, and noise trains you to stop reading the strip.
-4. 5-min avg per card — it isn't what the alert uses (the rule averages 3 samples), so it
-   invited the wrong inference.
+4. 5-min avg per card — it isn't what the alert uses (the rule requires every one of the
+   last 5 samples to be low), so it invited the wrong inference.
 5. Bandwidth number and backoff step per card — already visible (right axis, alert history).
 6. Last-seen text per card — the line ending shows it; `Collector` covers the global case.
 7. Range chips 1h/6h/24h/48h — the toolbar reaches any range, so the chips were a second
@@ -234,8 +257,9 @@ Cut from the first draft, and why:
 
 ## 11. Render cost — accepted
 
-1. ~32 charts × 2 series × 2,880 points paint in roughly 3–5 s on a flagship, once per
-   page load. Accepted: no polling, no re-render, nothing to keep smooth.
+1. ~64 charts × 2,880 points paint in roughly 6–10 s on a flagship, once per page load.
+   Accepted: no polling, no re-render, nothing to keep smooth. Splitting fps and bandwidth
+   doubled the instance count (32 → 64) without changing the total point count.
 2. ApexCharts settings required to stay in that range: `dataLabels.enabled=false`,
    `markers.size=0`, `animations.enabled=false`, `tooltip.shared=true`,
    `stroke.width=1`, `xaxis.type='datetime'`.
@@ -300,8 +324,8 @@ Rewrite — the logic problems:
 5. **`should_notify()` is impure** — reads module globals and calls `time.time()`, so it
    cannot be tested. `now` and the window become parameters.
 6. **`MIN_SAMPLES == MAX_SAMPLES == 3`**, so the "rolling average" never actually smooths —
-   the confirmation window *is* the smoothing window. Behaviour kept, constants made
-   separate and explicit.
+   the confirmation window *is* the smoothing window. Replaced by an explicitly named
+   `ALERT_WINDOW_S` that maps to a sample count.
 7. **`print()` instead of logging** — no levels, no timestamps, lost in Docker logs.
 8. **`DISPLAY_TZ` is documented but unused**; `VN_TZ` is hardcoded +7.
 9. **No `requests.Session`** — a new TLS handshake on every call.
@@ -412,17 +436,19 @@ first, run it against seeded data, and every later phase can be verified by look
 
 `test_notify.py`
 
-1. Fewer than `min_samples` → no notify.
-2. Average ≥ threshold → no notify.
-3. Average < threshold, `next_at=0` → notify.
-4. Average < threshold, `now < next_at` → no notify.
+1. Fewer than `window_size` samples → no notify.
+2. Any sample above threshold → no notify.
+3. Full window at or below threshold, `next_at=0` → notify.
+4. Full window at or below threshold, `now < next_at` → no notify.
 5. `now == next_at` → notify (boundary).
-6. Average exactly == threshold → no notify (boundary).
+6. Every sample exactly == threshold → notify (boundary, inclusive).
 7. `fps=0` counts as low.
-8. Window keeps only the last `max_samples`.
+8. Window keeps only the last `window_size`.
 9. Returned samples are in chronological order.
-10. Healthy average resets `next_at` and `step`.
-11. Invariant: notify implies average < threshold.
+10. Healthy window resets `next_at` and `step`.
+11. Invariant: notify implies every sample ≤ threshold.
+12. A dip is ignored until the window is fully low: `[20, 20, 2]` then `[20, 2, 2]` then
+    `[2, 2, 2]` → only the third notifies.
 
 `test_backoff.py`
 
@@ -433,7 +459,7 @@ first, run it against seeded data, and every later phase can be verified by look
 5. Fifth → `+86400`, `step` stays 4.
 6. Sixth → still `+86400` (ceiling holds).
 7. Healthy sample → `next_at = 0`, `step = 0`.
-8. Recovery then new drop → alerts immediately, not after 24h.
+8. Recovery then new drop → needs a full low window again before the next alert.
 9. `now` far past `next_at` → exactly one alert.
 10. `next_at` past but average healthy → quiet and reset.
 
