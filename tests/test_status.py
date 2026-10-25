@@ -120,7 +120,7 @@ def test_database_trend_ignores_samples_older_than_seven_days(conn):
 def test_status_carries_threshold_and_timezone(conn):
     payload = status(conn)
 
-    assert payload["threshold"] == 18.0
+    assert payload["threshold"] == 3.0
     assert payload["tz"] == "Asia/Ho_Chi_Minh"
     assert payload["as_of"] == int(NOW)
 

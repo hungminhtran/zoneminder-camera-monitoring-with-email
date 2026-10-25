@@ -21,6 +21,18 @@ def test_header_states_count_and_threshold():
     assert "18 fps" in body
 
 
+def test_header_states_the_alert_window():
+    body = monitor.build_email_body(ALERTS, 0, 18.0, "UTC", 300)
+
+    assert "for the last 5 minutes" in body
+
+
+def test_window_shorter_than_a_minute_reads_as_one_minute():
+    body = monitor.build_email_body(ALERTS, 0, 18.0, "UTC", 30)
+
+    assert "for the last 1 minutes" in body
+
+
 def test_one_block_per_camera():
     body = monitor.build_email_body(ALERTS * 3, 0, 18.0)
 

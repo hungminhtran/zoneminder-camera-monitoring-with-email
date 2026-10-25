@@ -104,17 +104,16 @@ def should_notify(
     now: float,
     *,
     threshold: float = config.LOW_FPS_THRESHOLD,
-    min_samples: int = config.MIN_SAMPLES,
-    max_samples: int = config.MAX_SAMPLES,
+    window_size: int = config.ALERT_WINDOW_SAMPLES,
     backoff_h=config.BACKOFF_H,
 ) -> Decision:
-    window = (tuple(samples) + (float(fps),))[-max_samples:]
+    window = (tuple(samples) + (float(fps),))[-window_size:]
     avg = sum(window) / len(window)
 
-    if len(window) < min_samples:
+    if len(window) < window_size:
         return Decision(window, avg, next_at, step, False)
 
-    if avg >= threshold:
+    if max(window) > threshold:
         return Decision(window, avg, 0.0, 0, False)
 
     if next_at != 0.0 and now < next_at:
@@ -130,13 +129,16 @@ def should_notify(
 
 
 def build_email_body(alerts, ts: int, threshold: float,
-                     tz_name: str = config.DISPLAY_TZ) -> str:
+                     tz_name: str = config.DISPLAY_TZ,
+                     window_s: int = config.ALERT_WINDOW_S) -> str:
     if not alerts:
         return ""
 
     stamp = datetime.fromtimestamp(ts, ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M:%S %z")
+    minutes = max(1, window_s // 60)
     lines = [
-        f"{len(alerts)} camera(s) below {threshold:g} fps (checked at {stamp})",
+        f"{len(alerts)} camera(s) at or below {threshold:g} fps "
+        f"for the last {minutes} minutes (checked at {stamp})",
         "-" * 70,
     ]
     for alert in alerts:
@@ -226,7 +228,7 @@ def tick(conn, client: "ZmClient", now: float) -> list:
             continue
 
         db.add_sample(conn, camera.source, slot, camera.fps, camera.bandwidth_kb)
-        prior = db.recent_fps(conn, camera.source, config.MAX_SAMPLES)[:-1]
+        prior = db.recent_fps(conn, camera.source, config.ALERT_WINDOW_SAMPLES)[:-1]
         state = db.get_camera(conn, camera.source)
         next_at = state["next_at"] if state else 0.0
         step = state["step"] if state else 0
@@ -256,7 +258,11 @@ def tick(conn, client: "ZmClient", now: float) -> list:
 
 
 def deliver(conn, ts: int, alerts: list, settings: Settings) -> None:
-    subject = f"[NVR] {len(alerts)} camera(s) below {config.LOW_FPS_THRESHOLD:g} fps"
+    minutes = max(1, config.ALERT_WINDOW_S // 60)
+    subject = (
+        f"[NVR] {len(alerts)} camera(s) at or below "
+        f"{config.LOW_FPS_THRESHOLD:g} fps for {minutes} min"
+    )
     body = build_email_body(alerts, ts, config.LOW_FPS_THRESHOLD)
 
     ok, error = True, None
