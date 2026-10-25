@@ -30,6 +30,15 @@ def db_size_trend(samples, now, window_s=config.SECONDS_PER_DAY,
     return {"bytes": current, "delta": current - baseline}
 
 
+def record_db_size(samples, now, size_bytes, interval_s=config.DB_SIZE_SAMPLE_INTERVAL_S):
+    if size_bytes <= 0:
+        return False
+    if samples and now - samples[-1][0] < interval_s:
+        return False
+    samples.append((int(now), int(size_bytes)))
+    return True
+
+
 def check_passphrase(given: str | None, expected: str | None) -> bool:
     if not given or not expected:
         return False
@@ -119,6 +128,7 @@ def index() -> FileResponse:
 @app.get("/api/data")
 def data(only: str | None = None):
     now = time.time()
+    record_db_size(db_size_samples, now, db.file_size(config.DB_PATH))
     conn = db.connect()
     try:
         conn.execute("BEGIN")

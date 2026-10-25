@@ -1,4 +1,16 @@
+import db
 import web
+
+
+def test_pause_flag_survives_a_new_connection(conn, db_path):
+    db.set_setting(conn, "notify_enabled", "0")
+    conn.close()
+
+    reopened = db.connect(db_path)
+    try:
+        assert db.notify_enabled(reopened) is False
+    finally:
+        reopened.close()
 
 
 def test_correct_passphrase_is_allowed():
