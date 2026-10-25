@@ -4,6 +4,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+STATIC_DIR = SCRIPT_DIR / "static"
+APEXCHARTS_DIR = SCRIPT_DIR.parent / "apexcharts-js"
 
 DB_PATH = Path(os.environ.get("DB_PATH", SCRIPT_DIR / "zoneminder_monitoring.db"))
 SAMPLE_SECONDS = int(os.environ.get("SAMPLE_SECONDS", "60"))

@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZoneMinder monitoring</title>
+<script src="/apexcharts-js/apexcharts.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; background: #fff; color: #1f2328;
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .sample-bar {
+    background: #cf222e; color: #fff; font-weight: 600; text-align: center;
+    padding: 6px; margin-bottom: 10px;
+  }
+  .top {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding-bottom: 10px; border-bottom: 1px solid #d0d7de; margin-bottom: 10px;
+  }
+  .strip { display: flex; flex-wrap: wrap; gap: 14px; flex: 1 1 auto; color: #57606a; }
+  .ind { white-space: nowrap; }
+  .ind b { color: #1f2328; }
+  .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #8c959f; margin-right: 6px;
+  }
+  .dot.ok { background: #1a7f37; }
+  .dot.bad { background: #cf222e; }
+  .dot.idle { background: #8c959f; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .as-of { color: #57606a; white-space: nowrap; }
+  .error { color: #cf222e; min-height: 16px; }
+  input, button {
+    font: inherit; padding: 5px 8px; border: 1px solid #d0d7de;
+    border-radius: 6px; background: #fff; color: inherit;
+  }
+  input[type=password] { width: 130px; }
+  button { cursor: pointer; }
+  button.paused { background: #cf222e; border-color: #cf222e; color: #fff; }
+  .grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  }
+  .card { border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 10px 4px; cursor: pointer; }
+  .card header { display: flex; align-items: baseline; gap: 8px; margin: 0 0 2px; }
+  .card h2 {
+    font-size: 13px; margin: 0; flex: 1 1 auto;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .res { color: #57606a; font-size: 11px; }
+  .fps { color: #1d4ed8; font-weight: 600; }
+  .card.expanded { position: fixed; inset: 8px; z-index: 10; background: #fff; cursor: default; }
+  .apexcharts-toolbar svg { transform: scale(1.4); }
+</style>
+</head>
+<body>
+
+<div id="sample-bar" class="sample-bar" hidden>SAMPLE DATA — NOT PRODUCTION</div>
+
+<header class="top">
+  <div id="strip" class="strip"></div>
+  <div class="controls">
+    <span id="as-of" class="as-of">loading…</span>
+    <input id="passphrase" type="password" placeholder="passphrase" autocomplete="off">
+    <button id="toggle">…</button>
+  </div>
+</header>
+<div id="control-error" class="error"></div>
+
+<main id="grid" class="grid"></main>
+
+<script>
+const state = {
+  tz: "Asia/Ho_Chi_Minh",
+  interval: 60,
+  notifyEnabled: true,
+  charts: {},
+  cards: {},
+  expanded: null,
+};
+
+const grid = document.getElementById("grid");
+const strip = document.getElementById("strip");
+const sampleBar = document.getElementById("sample-bar");
+const controlError = document.getElementById("control-error");
+
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) return "-";
+  const mb = bytes / (1024 * 1024);
+  return (mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)) + " MB";
+}
+
+function formatAge(seconds) {
+  if (seconds === null || seconds === undefined) return "-";
+  if (seconds < 90) return seconds + "s";
+  if (seconds < 5400) return Math.round(seconds / 60) + "m";
+  return (seconds / 3600).toFixed(1) + "h";
+}
+
+function formatTime(ms) {
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: state.tz, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(ms));
+}
+
+function formatDateTime(ms) {
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: state.tz, day: "2-digit", month: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(ms));
+}
+
+function indicator(label, value, tone) {
+  return '<span class="ind"><i class="dot ' + tone + '"></i>' + label +
+         ': <b>' + value + '</b></span>';
+}
+
+function renderStrip(status) {
+  const parts = [];
+  const stale = status.stale_seconds;
+
+  parts.push(indicator(
+    "Collector",
+    status.collector_alive ? "alive" : (stale === null ? "no data" : "stale " + formatAge(stale)),
+    status.collector_alive ? "ok" : (stale === null ? "idle" : "bad")
+  ));
+
+  const reporting = status.cameras_reporting;
+  const known = status.cameras_known;
+  parts.push(indicator(
+    "Cameras", reporting + " / " + known,
+    known === 0 ? "idle" : (reporting < known ? "bad" : "ok")
+  ));
+
+  const last = status.last_email;
+  parts.push(indicator(
+    "Last email",
+    last === null ? "none" : (last.email_ok ? "sent " : "failed ") + formatTime(last.ts * 1000),
+    last === null ? "idle" : (last.email_ok ? "ok" : "bad")
+  ));
+
+  const database = status.database || {};
+  const delta = database.delta;
+  const deltaText = (delta === null || delta === undefined)
+    ? "-"
+    : (delta >= 0 ? "+" : "") + formatBytes(delta);
+  parts.push(indicator(
+    "Database", formatBytes(database.bytes) + " (" + deltaText + " / 24h)",
+    database.bytes === null ? "idle" : "ok"
+  ));
+
+  strip.innerHTML = parts.join("");
+}
+
+function chartOptions(camera, threshold) {
+  const fps = camera.points.map(p => [p[0] * 1000, p[1]]);
+  const bandwidth = camera.points.map(p => [p[0] * 1000, p[2]]);
+
+  return {
+    chart: {
+      type: "line",
+      height: 200,
+      fontFamily: "inherit",
+      animations: { enabled: false },
+      zoom: { enabled: true, type: "x" },
+      toolbar: {
+        show: true,
+        autoSelected: "zoom",
+        tools: {
+          download: false, selection: true, zoom: true,
+          zoomin: true, zoomout: true, pan: true, reset: true,
+        },
+      },
+    },
+    series: [
+      { name: "fps", data: fps },
+      { name: "KB/s", data: bandwidth },
+    ],
+    colors: ["#1d4ed8", "#c2410c"],
+    stroke: { width: 1, curve: "straight" },
+    markers: { size: 0 },
+    dataLabels: { enabled: false },
+    legend: { show: false },
+    noData: { text: "no samples" },
+    xaxis: {
+      type: "datetime",
+      labels: { datetimeUTC: false, formatter: ms => formatTime(ms) },
+    },
+    yaxis: [
+      {
+        title: { text: "fps", style: { color: "#1d4ed8", fontSize: "10px" } },
+        labels: { formatter: value => value === null ? "" : value.toFixed(0) },
+      },
+      {
+        opposite: true,
+        title: { text: "KB/s", style: { color: "#c2410c", fontSize: "10px" } },
+        labels: { formatter: value => value === null ? "" : value.toFixed(0) },
+      },
+    ],
+    tooltip: {
+      shared: true,
+      x: { formatter: ms => formatDateTime(ms) },
+    },
+    annotations: {
+      yaxis: [{
+        y: threshold,
+        borderColor: "#cf222e",
+        strokeDashArray: 5,
+        label: {
+          text: "threshold " + threshold,
+          style: { background: "#cf222e", color: "#fff", fontSize: "9px" },
+        },
+      }],
+    },
+  };
+}
+
+function toggleExpanded(source) {
+  const wasExpanded = state.expanded;
+
+  if (wasExpanded !== null) {
+    state.cards[wasExpanded].classList.remove("expanded");
+    state.charts[wasExpanded].updateOptions({ chart: { height: 200 } });
+    state.expanded = null;
+  }
+  if (wasExpanded === source) return;
+
+  state.cards[source].classList.add("expanded");
+  state.charts[source].updateOptions({
+    chart: { height: Math.max(320, window.innerHeight - 180) },
+  });
+  state.expanded = source;
+  window.dispatchEvent(new Event("resize"));
+}
+
+function buildCard(camera, series, status) {
+  const lastTs = series.points.length ? series.points[series.points.length - 1][0] : null;
+  const fresh = lastTs !== null &&
+    (status.as_of - lastTs) <= 2 * state.interval;
+  const tone = lastTs === null ? "idle" : (fresh ? "ok" : "bad");
+
+  const card = document.createElement("section");
+  card.className = "card";
+  card.innerHTML =
+    '<header><i class="dot ' + tone + '"></i>' +
+    '<h2></h2><span class="res"></span><span class="fps"></span></header>' +
+    '<div class="chart"></div>';
+  card.querySelector("h2").textContent = camera.source;
+  card.querySelector(".res").textContent = camera.resolution || "";
+  card.querySelector(".fps").textContent =
+    camera.fps === null || camera.fps === undefined ? "-" : Number(camera.fps).toFixed(1);
+
+  card.addEventListener("click", event => {
+    if (event.target.closest(".apexcharts-toolbar")) return;
+    toggleExpanded(camera.source);
+  });
+
+  grid.appendChild(card);
+
+  const chart = new ApexCharts(
+    card.querySelector(".chart"),
+    chartOptions(series, status.threshold)
+  );
+  chart.render();
+
+  state.cards[camera.source] = card;
+  state.charts[camera.source] = chart;
+}
+
+function render(data) {
+  const status = data.status;
+  state.tz = status.tz;
+  state.interval = status.sample_seconds;
+  state.notifyEnabled = status.notify_enabled;
+
+  renderStrip(status);
+  sampleBar.hidden = !status.seeded;
+  document.getElementById("as-of").textContent =
+    "as of " + formatDateTime(status.as_of * 1000);
+  updateToggle();
+
+  Object.values(state.charts).forEach(chart => chart.destroy());
+  state.charts = {};
+  state.cards = {};
+  state.expanded = null;
+  grid.innerHTML = "";
+
+  const seriesBySource = new Map(
+    data.series.cameras.map(camera => [camera.source, camera])
+  );
+  const sources = data.cameras.length
+    ? data.cameras
+    : data.series.cameras.map(camera => ({ source: camera.source, resolution: camera.resolution, fps: null }));
+
+  sources.forEach(camera => {
+    const series = seriesBySource.get(camera.source) || { points: [] };
+    buildCard(camera, series, status);
+  });
+
+  if (sources.length === 0) {
+    grid.innerHTML = '<p class="as-of">No cameras recorded yet. ' +
+      'Run tools/seed.py or wait for the collector.</p>';
+  }
+}
+
+function updateToggle() {
+  const button = document.getElementById("toggle");
+  button.textContent = state.notifyEnabled ? "Notifying" : "Paused";
+  button.classList.toggle("paused", !state.notifyEnabled);
+}
+
+async function sendControl(enable) {
+  controlError.textContent = "";
+  const response = await fetch("/api/control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      passphrase: document.getElementById("passphrase").value,
+      enable,
+    }),
+  });
+
+  if (!response.ok) {
+    controlError.textContent = response.status === 401
+      ? "wrong passphrase"
+      : "control failed (" + response.status + ")";
+    return;
+  }
+
+  const result = await response.json();
+  state.notifyEnabled = result.notify_enabled;
+  updateToggle();
+}
+
+document.getElementById("toggle").addEventListener("click", () => {
+  sendControl(!state.notifyEnabled);
+});
+
+fetch("/api/data")
+  .then(response => response.json())
+  .then(render)
+  .catch(error => {
+    document.getElementById("as-of").textContent = "load failed: " + error;
+  });
+</script>
+</body>
+</html>
