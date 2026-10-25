@@ -4,5 +4,13 @@
 
 monitor_config.json
 monitor_config.tmp
+sample_zoneminder_response.txt
+data/
+zoneminder_monitoring.db
+zoneminder_monitoring.db-wal
+zoneminder_monitoring.db-shm
 __pycache__/
 *.pyc
+.pytest_cache/
+.venv/
+venv/
