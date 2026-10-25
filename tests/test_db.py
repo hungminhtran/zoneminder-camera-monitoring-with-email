@@ -125,6 +125,23 @@ def test_camera_overview_returns_latest_sample_per_camera(conn):
     assert overview["cam_c"]["ts"] is None
 
 
+def test_camera_overview_orders_by_monitor_id(conn):
+    db.save_camera(conn, "cam_a", "1920x1080", 0.0, 0, 10, monitor_id=10)
+    db.save_camera(conn, "cam_b", "1280x720", 0.0, 0, 10, monitor_id=2)
+    db.save_camera(conn, "cam_c", "640x480", 0.0, 0, 10)
+
+    assert [row["source"] for row in db.camera_overview(conn)] == [
+        "cam_b", "cam_a", "cam_c"
+    ]
+
+
+def test_camera_overview_keeps_monitor_id(conn):
+    db.save_camera(conn, "cam_a", "1920x1080", 0.0, 0, 10, monitor_id=7)
+    db.save_camera(conn, "cam_a", "1920x1080", 0.0, 0, 20)
+
+    assert db.camera_overview(conn)[0]["monitor_id"] == 7
+
+
 def test_notifications_are_newest_first(conn):
     db.add_notification(conn, 100, "cam_a", "1920x1080", 5.0, 500.0, 1, True, None)
     db.add_notification(conn, 300, "cam_b", "1920x1080", 4.0, 400.0, 2, False, "smtp down")

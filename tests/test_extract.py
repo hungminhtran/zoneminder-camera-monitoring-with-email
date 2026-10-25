@@ -60,6 +60,7 @@ def test_live_fixture_entries_map_to_cameras(item):
     assert parsed.resolution == f"{raw['Width']}x{raw['Height']}"
     assert parsed.fps == float(status["CaptureFPS"])
     assert parsed.bandwidth_kb == round(status["CaptureBandwidth"] / 1024, 1)
+    assert parsed.monitor_id == raw["Id"]
     assert parsed.connected is True
 
 
@@ -113,3 +114,7 @@ def test_null_fields_do_not_raise():
 
 def test_disconnected_status_is_reported():
     assert camera(entry(status_fields={"Status": "Disconnected"})).connected is False
+
+
+def test_missing_id_gives_none():
+    assert camera(entry({"Id": None})).monitor_id is None

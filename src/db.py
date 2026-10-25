@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS {SAMPLES} (
 
 CREATE TABLE IF NOT EXISTS {CAMERAS} (
     source     TEXT PRIMARY KEY,
+    monitor_id INTEGER,
     resolution TEXT,
     next_at    REAL    NOT NULL DEFAULT 0,
     step       INTEGER NOT NULL DEFAULT 0,
@@ -56,9 +57,10 @@ ON CONFLICT(source, ts) DO UPDATE SET
 """
 
 CAMERA_UPSERT = f"""
-INSERT INTO {CAMERAS} (source, resolution, next_at, step, last_seen)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO {CAMERAS} (source, monitor_id, resolution, next_at, step, last_seen)
+VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(source) DO UPDATE SET
+    monitor_id = COALESCE(excluded.monitor_id, {CAMERAS}.monitor_id),
     resolution = excluded.resolution,
     next_at = excluded.next_at,
     step = excluded.step,
@@ -82,8 +84,15 @@ def init(path: Path | None = None) -> None:
     conn = connect(target)
     try:
         conn.executescript(SCHEMA)
+        _add_missing_columns(conn)
     finally:
         conn.close()
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({CAMERAS})")}
+    if "monitor_id" not in columns:
+        conn.execute(f"ALTER TABLE {CAMERAS} ADD COLUMN monitor_id INTEGER")
 
 
 def add_sample(conn: sqlite3.Connection, source: str, ts: int, fps: float,
@@ -110,8 +119,9 @@ def get_camera(conn: sqlite3.Connection, source: str) -> sqlite3.Row | None:
 
 
 def save_camera(conn: sqlite3.Connection, source: str, resolution: str | None,
-                next_at: float, step: int, last_seen: int | None) -> None:
-    conn.execute(CAMERA_UPSERT, (source, resolution, next_at, step, last_seen))
+                next_at: float, step: int, last_seen: int | None,
+                monitor_id: int | None = None) -> None:
+    conn.execute(CAMERA_UPSERT, (source, monitor_id, resolution, next_at, step, last_seen))
 
 
 def add_notification(conn: sqlite3.Connection, ts: int, source: str,
@@ -140,7 +150,7 @@ def prune(conn: sqlite3.Connection, before: int) -> None:
 def series(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
-        SELECT s.source, c.resolution, s.ts, s.fps, s.bandwidth_kb
+        SELECT s.source, c.monitor_id, c.resolution, s.ts, s.fps, s.bandwidth_kb
         FROM {SAMPLES} s
         LEFT JOIN {CAMERAS} c ON c.source = s.source
         WHERE s.ts >= ?
@@ -160,12 +170,12 @@ def notifications(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
 def camera_overview(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
-        SELECT c.source, c.resolution, s.fps, s.bandwidth_kb, s.ts
+        SELECT c.source, c.monitor_id, c.resolution, s.fps, s.bandwidth_kb, s.ts
         FROM {CAMERAS} c
         LEFT JOIN {SAMPLES} s
             ON s.source = c.source
            AND s.ts = (SELECT MAX(ts) FROM {SAMPLES} WHERE source = c.source)
-        ORDER BY c.source
+        ORDER BY c.monitor_id IS NULL, c.monitor_id, c.source
         """
     ).fetchall()
 

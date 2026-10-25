@@ -54,6 +54,7 @@ class Camera:
     fps: float
     bandwidth_kb: float
     connected: bool
+    monitor_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -82,13 +83,17 @@ def extract(entry: dict) -> Camera | None:
     status = entry.get("Monitor_Status") or {}
     fallback = monitor.get("Path") or monitor.get("Type") or ""
     source = monitor.get("Name") or fallback
+    monitor_id = monitor.get("Id")
     width = monitor.get("Width") or 0
     height = monitor.get("Height") or 0
     resolution = f"{width}x{height}" if width and height else "-"
     fps = float(status.get("CaptureFPS") or 0)
     bandwidth_kb = round(int(status.get("CaptureBandwidth") or 0) / 1024, 1)
     connected = status.get("Status") == "Connected"
-    return Camera(source, resolution, fps, bandwidth_kb, connected)
+    return Camera(
+        source, resolution, fps, bandwidth_kb, connected,
+        int(monitor_id) if monitor_id not in (None, "") else None,
+    )
 
 
 def should_notify(
@@ -229,7 +234,8 @@ def tick(conn, client: "ZmClient", now: float) -> list:
         decision = should_notify(prior, next_at, step, camera.fps, now)
 
         db.save_camera(
-            conn, camera.source, camera.resolution, decision.next_at, decision.step, slot
+            conn, camera.source, camera.resolution, decision.next_at, decision.step,
+            slot, camera.monitor_id,
         )
         log.info(
             "%s %s fps=%.2f avg=%.2f bw=%.1f KB/s notify=%s",

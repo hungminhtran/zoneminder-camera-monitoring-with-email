@@ -23,12 +23,22 @@ def check_passphrase(given: str | None, expected: str | None) -> bool:
     return secrets.compare_digest(given, expected)
 
 
+def _camera_order(camera: dict):
+    monitor_id = camera["monitor_id"]
+    return (monitor_id is None, monitor_id or 0, camera["source"])
+
+
 def build_series_payload(rows, threshold: float, tz_name: str) -> dict:
     cameras: dict[str, dict] = {}
     for row in rows:
         camera = cameras.setdefault(
             row["source"],
-            {"source": row["source"], "resolution": row["resolution"], "points": []},
+            {
+                "source": row["source"],
+                "monitor_id": row["monitor_id"],
+                "resolution": row["resolution"],
+                "points": [],
+            },
         )
         camera["points"].append([
             int(row["ts"]),
@@ -38,7 +48,7 @@ def build_series_payload(rows, threshold: float, tz_name: str) -> dict:
     return {
         "threshold": threshold,
         "tz": tz_name,
-        "cameras": [cameras[key] for key in sorted(cameras)],
+        "cameras": sorted(cameras.values(), key=_camera_order),
     }
 
 
