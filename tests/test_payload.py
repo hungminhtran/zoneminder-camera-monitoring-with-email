@@ -3,9 +3,9 @@ import web
 
 def series_rows(*items):
     return [
-        {"source": source, "resolution": resolution, "ts": ts, "fps": fps,
-         "bandwidth_kb": bandwidth}
-        for source, resolution, ts, fps, bandwidth in items
+        {"source": item[0], "resolution": item[1], "ts": item[2], "fps": item[3],
+         "bandwidth_kb": item[4], "monitor_id": item[5] if len(item) > 5 else None}
+        for item in items
     ]
 
 
@@ -37,6 +37,32 @@ def test_cameras_are_sorted_by_source():
     )
 
     assert [camera["source"] for camera in payload["cameras"]] == ["cam_a", "cam_b", "cam_c"]
+
+
+def test_cameras_are_ordered_by_monitor_id():
+    payload = web.build_series_payload(
+        series_rows(
+            ("cam_ten", "1920x1080", 10, 20.0, 500.0, 10),
+            ("cam_two", "1920x1080", 10, 20.0, 500.0, 2),
+        ),
+        18.0,
+        "UTC",
+    )
+
+    assert [camera["source"] for camera in payload["cameras"]] == ["cam_two", "cam_ten"]
+
+
+def test_cameras_without_monitor_id_sort_last():
+    payload = web.build_series_payload(
+        series_rows(
+            ("cam_a", "1920x1080", 10, 20.0, 500.0),
+            ("cam_z", "1920x1080", 10, 20.0, 500.0, 5),
+        ),
+        18.0,
+        "UTC",
+    )
+
+    assert [camera["source"] for camera in payload["cameras"]] == ["cam_z", "cam_a"]
 
 
 def test_resolution_carried_through():

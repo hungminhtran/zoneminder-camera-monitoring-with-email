@@ -62,8 +62,8 @@ def seed(conn, cameras: int, sample_seconds: int, retention_days: float, now: fl
     db.add_samples(conn, rows)
 
     last_seen = start + (slots - 1) * sample_seconds
-    for source in sources:
-        db.save_camera(conn, source, RESOLUTION, 0.0, 0, last_seen)
+    for index, source in enumerate(sources, start=1):
+        db.save_camera(conn, source, RESOLUTION, 0.0, 0, last_seen, index)
 
     for index, dip_start in DIP_SLOT_START.items():
         if index >= len(sources):
