@@ -5,14 +5,18 @@ NVR monitor: query ZoneMinder for cameras with low capture FPS, notify by email.
 FPS is averaged over the last MAX_SAMPLES cron runs to smooth out
 ZoneMinder's noisy CaptureFPS reporting.
 
+Config comes from environment variables only; this script never reads .env
+itself. Export the values in your shell, systemd unit, or Compose env_file -
+see run.sh for the local/cron case.
+
 Env vars:
     ZM_URL, ZM_USER, ZM_PASSWORD       ZoneMinder base URL (include /zm if used)
     ZM_INSECURE=1                      skip TLS verify (self-signed cert)
     EMAIL_FROM, EMAIL_PASS, EMAIL_TO   Gmail sender (App Password), recipient
-    LOW_FPS_THRESHOLD=10               FPS below this counts as "low"
+    LOW_FPS_THRESHOLD=18               FPS below this counts as "low"
 
 State:
-    ./monitor_config.json              per-camera rolling samples + backoff
+    <script dir>/monitor_config.json   per-camera rolling samples + backoff
 """
 import json
 import os
@@ -28,20 +32,31 @@ import requests
 
 
 # ---------- config ----------
-BASE = "http://10.66.66.2"  # e.g. https://host/zm
-USER = "admin"
-PASS = ""
-VERIFY = True
-EMAIL_FROM = ""
-EMAIL_PASS = ""
-EMAIL_TO = ""
+SCRIPT_DIR = Path(__file__).resolve().parent
 
-STATE_FILE        = Path("./monitor_config.json")
+
+def required(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        sys.exit(f"Missing env var: {name}")
+    return value
+
+
+BASE       = required("ZM_URL").rstrip("/")
+USER       = required("ZM_USER")
+PASS       = required("ZM_PASSWORD")
+EMAIL_FROM = required("EMAIL_FROM")
+EMAIL_PASS = required("EMAIL_PASS")
+EMAIL_TO   = required("EMAIL_TO")
+VERIFY     = os.environ.get("ZM_INSECURE", "0") != "1"
+
+STATE_FILE        = SCRIPT_DIR / "monitor_config.json"
 LOW_FPS_THRESHOLD = float(os.environ.get("LOW_FPS_THRESHOLD", "18"))
 BACKOFF_H         = [1, 2, 4, 8, 24]     # hours; last element is the ceiling
 MIN_SAMPLES       = 3                    # samples needed before deciding
 MAX_SAMPLES       = 3                    # rolling window size
 VN_TZ             = timezone(timedelta(hours=7))
+
 
 
 # ---------- email ----------
@@ -83,16 +98,26 @@ def login(payload: dict) -> dict:
     return d
 
 
-_d = login({"user": USER, "pass": PASS})
-access, refresh = _d["access_token"], _d["refresh_token"]
-access_exp = time.time() + _d["access_token_expires"]
+access: str = ""
+refresh: str = ""
+access_exp: float = 0.0
+
+
+def authenticate() -> None:
+    """Log in with user/password and cache the JWT pair for get()."""
+    global access, refresh, access_exp
+    d = login({"user": USER, "pass": PASS})
+    access, refresh = d["access_token"], d["refresh_token"]
+    access_exp = time.time() + d["access_token_expires"]
 
 
 def get(path: str) -> dict:
-    global access, access_exp
+    global access, refresh, access_exp
     if time.time() > access_exp - 60:
-        access = login({"token": refresh})["access_token"]
-        access_exp = time.time() + 3600
+        d = login({"token": refresh})
+        access = d["access_token"]
+        access_exp = time.time() + d.get("access_token_expires", 3600)
+        refresh = d.get("refresh_token", refresh)
     r = requests.get(f"{BASE}{path}", params={"token": access}, verify=VERIFY, timeout=15)
     r.raise_for_status()
     return r.json()
@@ -168,6 +193,8 @@ def should_notify(state: dict, source: str, fps: float) -> tuple[bool, float]:
 
 # ---------- main ----------
 def main() -> int:
+    authenticate()
+
     data  = get("/api/monitors.json")
     state = load_state()
     new_state: dict[str, dict] = {}         # rebuilt from live cameras only
